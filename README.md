@@ -1515,11 +1515,7 @@ ids_out, num_out, is_number_mask = model.generate(start_ids, start_nums, 17)
 
 ```bibtex
 @article{DBLP:journals/corr/abs-1907-01470,
-    author    = {Sainbayar Sukhbaatar and
-               Edouard Grave and
-               Guillaume Lample and
-               Herv{\'{e}} J{\'{e}}gou and
-               Armand Joulin},
+    author    = {Sainbayar Sukhbaatar and Edouard Grave and Guillaume Lample and Herv{\'{e}} J{\'{e}}gou and Armand Joulin},
     title     = {Augmenting Self-attention with Persistent Memory},
     journal   = {CoRR},
     volume    = {abs/1907.01470},
@@ -2159,6 +2155,35 @@ ids_out, num_out, is_number_mask = model.generate(start_ids, start_nums, 17)
     author  = {Olga Golovneva and Tianlu Wang and Jason Weston and Sainbayar Sukhbaatar},
     year    = {2024},
     url     = {https://api.semanticscholar.org/CorpusID:270094992}
+}
+```
+
+```bibtex
+@article{Peebles2022ScalableDM,
+    title   = {Scalable Diffusion Models with Transformers},
+    author  = {William S. Peebles and Saining Xie},
+    journal = {2023 IEEE/CVF International Conference on Computer Vision (ICCV)},
+    year    = {2022},
+    pages   = {4172-4182},
+    url     = {https://api.semanticscholar.org/CorpusID:254854389}
+}
+```
+
+```bibtex
+@misc{Rubin2024,
+    author  = {Ohad Rubin},
+    url     = {https://medium.com/@ohadrubin/exploring-weight-decay-in-layer-normalization-challenges-and-a-reparameterization-solution-ad4d12c24950}
+}
+```
+
+```bibtex
+@article{Mesnard2024GemmaOM,
+    title   = {Gemma: Open Models Based on Gemini Research and Technology},
+    author  = {Gemma Team Thomas Mesnard and Cassidy Hardin and Robert Dadashi and Surya Bhupatiraju and Shreya Pathak and L. Sifre and Morgane Riviere and Mihir Kale and J Christopher Love and Pouya Dehghani Tafti and L'eonard Hussenot and Aakanksha Chowdhery and Adam Roberts and Aditya Barua and Alex Botev and Alex Castro-Ros and Ambrose Slone and Am'elie H'eliou and Andrea Tacchetti and Anna Bulanova and Antonia Paterson and Beth Tsai and Bobak Shahriari and Charline Le Lan and Christopher A. Choquette-Choo and Cl'ement Crepy and Daniel Cer and Daphne Ippolito and David Reid and Elena Buchatskaya and Eric Ni and Eric Noland and Geng Yan and George Tucker and George-Christian Muraru and Grigory Rozhdestvenskiy and Henryk Michalewski and Ian Tenney and Ivan Grishchenko and Jacob Austin and James Keeling and Jane Labanowski and Jean-Baptiste Lespiau and Jeff Stanway and Jenny Brennan and Jeremy Chen and Johan Ferret and Justin Chiu and Justin Mao-Jones and Katherine Lee and Kathy Yu and Katie Millican and Lars Lowe Sjoesund and Lisa Lee and Lucas Dixon and Machel Reid and Maciej Mikula and Mateo Wirth and Michael Sharman and Nikolai Chinaev and Nithum Thain and Olivier Bachem and Oscar Chang and Oscar Wahltinez and Paige Bailey and Paul Michel and Petko Yotov and Pier Giuseppe Sessa and Rahma Chaabouni and Ramona Comanescu and Reena Jana and Rohan Anil and Ross McIlroy and Ruibo Liu and Ryan Mullins and Samuel L Smith and Sebastian Borgeaud and Sertan Girgin and Sholto Douglas and Shree Pandya and Siamak Shakeri and Soham De and Ted Klimenko and Tom Hennigan and Vladimir Feinberg and Wojciech Stokowiec and Yu-hui Chen and Zafarali Ahmed and Zhitao Gong and Tris Brian Warkentin and Ludovic Peran and Minh Giang and Cl'ement Farabet and Oriol Vinyals and Jeffrey Dean and Koray Kavukcuoglu and Demis Hassabis and Zoubin Ghahramani and Douglas Eck and Joelle Barral and Fernando Pereira and Eli Collins and Armand Joulin and Noah Fiedel and Evan Senter and Alek Andreev and Kathleen Kenealy},
+    journal = {ArXiv},
+    year    = {2024},
+    volume  = {abs/2403.08295},
+    url     = {https://api.semanticscholar.org/CorpusID:268379206}
 }
 ```
 

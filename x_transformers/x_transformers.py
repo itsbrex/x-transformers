@@ -93,6 +93,9 @@ def l2norm(t, groups = 1):
     t = F.normalize(t, p = 2, dim = -1)
     return rearrange(t, '... g d -> ... (g d)')
 
+def softclamp(t, value):
+    return (t / value).tanh() * value
+
 def pad_at_dim(t, pad: Tuple[int, int], dim = -1, value = 0.):
     if pad == (0, 0):
         return t
@@ -560,40 +563,100 @@ class Scale(Module):
         return (scale_fn(out[0]), *out[1:])
 
 class LayerNorm(Module):
-    def __init__(self, dim):
+    def __init__(
+        self,
+        dim,
+        unit_offset = False
+    ):
         """
         bias-less layernorm has been shown to be more stable. most newer models have moved towards rmsnorm, also bias-less
         """
         super().__init__()
+        self.unit_offset = unit_offset
+
+        self.ln = nn.LayerNorm(dim, elementwise_affine = False)
         self.gamma = nn.Parameter(torch.ones(dim))
-        self.register_buffer("beta", torch.zeros(dim))
+        nn.init.constant_(self.gamma, 1. - float(unit_offset))
 
     def forward(self, x):
-        return F.layer_norm(x, x.shape[-1:], self.gamma, self.beta)
+        normed = self.ln(x)
+        gamma = self.gamma + self.unit_offset
+        return normed * gamma
 
-if version.parse(torch.__version__) >= version.parse('2.1.0'):
-    LayerNorm = partial(nn.LayerNorm, bias = False)
+class AdaptiveLayerNorm(Module):
+    def __init__(
+        self,
+        dim,
+        dim_condition = None
+    ):
+        super().__init__()
+        dim_condition = default(dim_condition, dim)
+
+        self.ln = nn.LayerNorm(dim, elementwise_affine = False)
+        self.to_gamma = nn.Linear(dim_condition, dim, bias = False)
+        nn.init.zeros_(self.to_gamma.weight)
+
+    def forward(self, x, *, condition):
+        normed = self.ln(x)
+        gamma = self.to_gamma(condition)
+        return normed * (gamma + 1.)
 
 class ScaleNorm(Module):
-    def __init__(self, dim):
+    def __init__(
+        self,
+        dim,
+        unit_offset = False
+    ):
         super().__init__()
+        self.unit_offset = unit_offset
         self.scale = dim ** 0.5
-        self.g = nn.Parameter(torch.ones(1))
+
+        self.g = nn.Parameter(torch.zeros(1))
+        nn.init.constant_(self.g, 1. - float(unit_offset))
 
     def forward(self, x):
-        return F.normalize(x, dim = -1) * self.scale * self.g
+        return F.normalize(x, dim = -1) * self.scale * (self.g + self.unit_offset)
 
 class RMSNorm(Module):
-    def __init__(self, dim):
+    def __init__(
+        self,
+        dim,
+        unit_offset = False
+    ):
         super().__init__()
+        self.unit_offset = unit_offset
         self.scale = dim ** 0.5
-        self.g = nn.Parameter(torch.ones(dim))
+
+        self.g = nn.Parameter(torch.zeros(dim))
+        nn.init.constant_(self.g, 1. - float(unit_offset))
 
     def forward(self, x):
-        return F.normalize(x, dim = -1) * self.scale * self.g
+        return F.normalize(x, dim = -1) * self.scale * (self.g + self.unit_offset)
+
+class AdaptiveRMSNorm(Module):
+    def __init__(
+        self,
+        dim,
+        dim_condition = None
+    ):
+        super().__init__()
+        self.scale = dim ** 0.5
+        dim_condition = default(dim_condition, dim)
+
+        self.to_gamma = nn.Linear(dim_condition, dim, bias = False)
+        nn.init.zeros_(self.to_gamma.weight)
+
+    def forward(self, x, *, condition):
+        normed = F.normalize(x, dim = -1)
+        gamma = self.to_gamma(condition)
+        return normed * self.scale * (gamma + 1.)
 
 class SimpleRMSNorm(Module):
-    def __init__(self, dim):
+    def __init__(
+        self,
+        dim,
+        **kwargs
+    ):
         super().__init__()
         self.scale = dim ** 0.5
 
@@ -667,10 +730,19 @@ class ShiftTokens(Module):
 # post branch operator
 
 class LayerScale(Module):
-    def __init__(self, fn: Module, dim, init_value = 0.):
+    def __init__(
+        self,
+        fn: Module,
+        dim,
+        init_value = 0.,
+        unit_offset = False
+    ):
         super().__init__()
+        self.unit_offset = unit_offset
+
         self.fn = fn
-        self.gamma = nn.Parameter(torch.ones(dim) * init_value)
+        self.gamma = nn.Parameter(torch.zeros(dim))
+        nn.init.constant_(self.gamma, init_value - float(unit_offset))
 
     def forward(self, x, **kwargs):
         out = self.fn(x, **kwargs)
@@ -680,6 +752,33 @@ class LayerScale(Module):
 
         out, *rest = out
         return out * self.gamma, *rest
+
+class AdaptiveLayerScale(Module):
+    def __init__(
+        self,
+        fn: Module,
+        dim,
+        dim_condition = None,
+        init_bias_value = -2.
+    ):
+        super().__init__()
+        self.fn = fn
+
+        dim_condition = default(dim_condition, dim)
+        self.to_gamma = nn.Linear(dim_condition, dim)
+
+        nn.init.zeros_(self.to_gamma.weight)
+        nn.init.constant_(self.to_gamma.bias, init_bias_value)
+
+    def forward(self, x, *, condition, **kwargs):
+        out = self.fn(x, **kwargs)
+        gamma = self.to_gamma(condition).sigmoid()
+
+        if isinstance(out, Tensor):
+            return out * gamma
+
+        out, *rest = out
+        return out * gamma, *rest
 
 # feedforward
 
@@ -785,7 +884,8 @@ class Attention(Module):
         cope_max_pos = 16,
         cope_soft_onehot_pos = False,
         cope_talking_heads = False,
-        logit_softclamp_value = None,
+        softclamp_logits = False,
+        logit_softclamp_value = 30.,
         onnxable = False
     ):
         super().__init__()
@@ -888,6 +988,7 @@ class Attention(Module):
             scale = qk_norm_scale if qk_norm else self.scale,
             add_zero_kv = add_zero_kv,
             flash = flash,
+            softclamp_logits = softclamp_logits,
             logit_softclamp_value = logit_softclamp_value,
             cope = cope,
             onnxable = onnxable
@@ -1129,6 +1230,13 @@ class AttentionLayers(Module):
         use_scalenorm = False,
         use_rmsnorm = False,
         use_simple_rmsnorm = False,
+        use_adaptive_layernorm = False,
+        use_adaptive_rmsnorm = False,
+        use_adaptive_layerscale = False, # paired with use_adaptive_layernorm for ada-ln-zero from DiT paper
+        norm_add_unit_offset = True,
+        dim_condition = None,
+        adaptive_condition_mlp = False,
+        adaptive_condition_mlp_expansion = 4,
         alibi_pos_bias = False,
         alibi_num_heads = None,
         rel_pos_bias = False,
@@ -1145,8 +1253,8 @@ class AttentionLayers(Module):
         rotary_xpos_scale_base = 512,
         rotary_base_rescale_factor = 1.,
         weight_tie_layers = False,
-        custom_layers: Tuple[str] | None = None,
-        layers_execute_order: Tuple[int] | None = None,
+        custom_layers: Tuple[str, ...] | None = None,
+        layers_execute_order: Tuple[int, ...] | None = None,
         sandwich_coef = None,
         par_ratio = None,
         residual_attn = False,
@@ -1159,6 +1267,8 @@ class AttentionLayers(Module):
         scale_residual_constant = 1.,
         shift_tokens = 0,
         sandwich_norm = False,
+        softclamp_output = False,
+        softclamp_output_value = 50.,
         resi_dual = False,
         resi_dual_scale = 1.,
         zero_init_branch_output = False,
@@ -1197,9 +1307,10 @@ class AttentionLayers(Module):
         # relative positional bias
 
         flash_attn = attn_kwargs.get('flash', False)
-        assert (int(rel_pos_bias) + int(dynamic_pos_bias) + int(alibi_pos_bias)) <= 1, 'you can only choose up to one of t5, alibi, or dynamic positional bias'
+        assert at_most_one_of(rel_pos_bias, dynamic_pos_bias, alibi_pos_bias), 'you can only choose up to one of t5, alibi, or dynamic positional bias'
 
         self.rel_pos = None
+
         if rel_pos_bias:
             assert not flash_attn, 'flash attention not compatible with t5 relative positional bias'
             self.rel_pos = RelativePositionBias(scale = dim_head ** 0.5, causal = causal, heads = heads, num_buckets = rel_pos_num_buckets, max_distance = rel_pos_max_distance)
@@ -1211,7 +1322,7 @@ class AttentionLayers(Module):
             assert alibi_num_heads <= heads, 'number of ALiBi heads must be less than the total number of heads'
             self.rel_pos = AlibiPositionalBias(heads = alibi_num_heads, total_heads = heads)
 
-        assert (int(sandwich_norm) + int(resi_dual)) <= 1, 'either sandwich norm or resiDual is selected, but not both'
+        assert at_most_one_of(sandwich_norm, resi_dual), 'either sandwich norm or resiDual is selected, but not both'
         assert not (not pre_norm and sandwich_norm), 'sandwich norm cannot be used when not using prenorm'
 
         if resi_dual:
@@ -1232,7 +1343,14 @@ class AttentionLayers(Module):
 
         # determine norm
 
-        assert (int(use_scalenorm) + int(use_rmsnorm) + int(use_simple_rmsnorm)) <= 1, 'you can only use either scalenorm, rmsnorm, or simple rmsnorm'
+        assert at_most_one_of(use_scalenorm, use_rmsnorm, use_simple_rmsnorm, use_adaptive_layernorm, use_adaptive_rmsnorm), 'you can only use either scalenorm, rmsnorm, adaptive layernorm, adaptive rmsnorm, or simple rmsnorm'
+
+        norm_need_condition = False
+        dim_condition = default(dim_condition, dim)
+        dim_condition_mult = 1
+
+        if adaptive_condition_mlp:
+            dim_condition_mult = adaptive_condition_mlp_expansion
 
         if use_scalenorm:
             norm_class = ScaleNorm
@@ -1240,10 +1358,23 @@ class AttentionLayers(Module):
             norm_class = RMSNorm
         elif use_simple_rmsnorm:
             norm_class = SimpleRMSNorm
+        elif use_adaptive_layernorm:
+            norm_need_condition = True
+            norm_class = partial(AdaptiveLayerNorm, dim_condition = dim_condition * dim_condition_mult)
+        elif use_adaptive_rmsnorm:
+            norm_need_condition = True
+            norm_class = partial(AdaptiveRMSNorm, dim_condition = dim_condition * dim_condition_mult)
         else:
             norm_class = LayerNorm
 
         norm_fn = partial(norm_class, dim)
+
+        if not norm_need_condition and norm_add_unit_offset:
+            # researcher Ohad Rubin shares in a blog post by adding an offset to gammas, they can be subjected to weight decay safely
+            norm_fn = partial(norm_fn, unit_offset = True)
+
+        self.norm_need_condition = norm_need_condition
+        self.dim_condition = dim_condition
 
         # determine default block layer type order
 
@@ -1259,10 +1390,33 @@ class AttentionLayers(Module):
 
         # determine post branch wrapper
 
+        assert at_most_one_of(use_layerscale, use_adaptive_layerscale)
+
         post_branch_fn = None
+        post_branch_fn_needs_condition = False
 
         if use_layerscale:
             post_branch_fn = partial(LayerScale, dim = dim, init_value = layerscale_init_value)
+        elif use_adaptive_layerscale:
+            post_branch_fn = partial(AdaptiveLayerScale, dim = dim, dim_condition = dim_condition * dim_condition_mult)
+            post_branch_fn_needs_condition = True
+
+        self.post_branch_fn_needs_condition = post_branch_fn_needs_condition
+
+        if exists(post_branch_fn) and not post_branch_fn_needs_condition and norm_add_unit_offset:
+            post_branch_fn = partial(post_branch_fn, unit_offset = True)
+
+        # setup mlp for conditioning
+
+        self.need_condition = norm_need_condition or post_branch_fn_needs_condition
+
+        self.adaptive_mlp = nn.Identity()
+
+        if self.need_condition and adaptive_condition_mlp:
+            self.adaptive_mlp = nn.Sequential(
+                nn.Linear(dim_condition, dim_condition * dim_condition_mult, bias = False),
+                nn.SiLU()
+            )
 
         # zero init
 
@@ -1328,6 +1482,12 @@ class AttentionLayers(Module):
 
         shift_tokens = cast_tuple(shift_tokens, len(layer_types))
 
+        # optional soft clamping just before the final norm
+        # used in gemma 2
+
+        self.softclamp_output = softclamp_output
+        self.softclamp_output_value = softclamp_output_value
+
         # whether it has post norm
 
         self.final_norm = norm_fn() if pre_norm or resi_dual else nn.Identity()
@@ -1357,6 +1517,8 @@ class AttentionLayers(Module):
 
             residual_fn = GRUGating if gate_residual else Residual
             residual = residual_fn(dim, scale_residual = scale_residual, scale_residual_constant = scale_residual_constant)
+
+            # all normalizations of the layer
 
             pre_branch_norm = norm_fn() if pre_norm else None
             post_branch_norm = norm_fn() if sandwich_norm else None
@@ -1388,9 +1550,38 @@ class AttentionLayers(Module):
         cache: LayerIntermediates | None = None,
         cache_age = 1,
         return_hiddens = False,
-        rotary_pos_emb = None
+        rotary_pos_emb = None,
+        condition = None,
+        layers_execute_order: Tuple[int, ...] | None = None
     ):
         assert not (self.cross_attend ^ exists(context)), 'context must be passed in if cross_attend is set to True'
+        assert not (exists(condition) ^ self.need_condition), 'condition needs to be passed in if using adaptive layernorm or vice versa'
+
+        # handle condition
+
+        if exists(condition):
+            assert condition.shape[-1] == self.dim_condition, f'expected condition dimension of {self.dim_condition} but received {condition.shape[-1]}'
+
+            assert condition.ndim in {2, 3}
+
+            if condition.ndim == 2:
+                condition = rearrange(condition, 'b d -> b 1 d')
+
+            condition = self.adaptive_mlp(condition)
+
+        # setup maybe layernorm kwarg
+
+        norm_kwargs = dict()
+
+        if self.norm_need_condition:
+            norm_kwargs.update(condition = condition)
+
+        # maybe post branch fn conditioning (DiT paper's ada-ln-zero)
+
+        block_forward_kwargs = dict()
+
+        if self.post_branch_fn_needs_condition:
+            block_forward_kwargs.update(condition = condition)
 
         # initialize accums
 
@@ -1453,7 +1644,11 @@ class AttentionLayers(Module):
             self.layer_dropouts
         )
 
-        layer_variables = tuple(tuple(layer_variable[i] for i in self.layers_execute_order) for layer_variable in layer_variables)
+        # able to override the layers execution order on forward, for trying to depth extrapolate
+
+        layers_execute_order = default(layers_execute_order, self.layers_execute_order)
+
+        layer_variables = tuple(tuple(layer_variable[i] for i in layers_execute_order) for layer_variable in layer_variables)
 
         # go through the attention and feedforward layers
 
@@ -1481,11 +1676,18 @@ class AttentionLayers(Module):
 
             pre_norm, post_branch_norm, post_main_norm = norm
 
+            if self.need_condition:
+                pre_norm = maybe(partial)(pre_norm, **norm_kwargs)
+                post_branch_norm = maybe(partial)(post_branch_norm, **norm_kwargs)
+                post_main_norm = maybe(partial)(post_main_norm, **norm_kwargs)
+
             if exists(pre_norm):
                 x = pre_norm(x)
 
                 if layer_type == 'a' and exists(layer_mem):
                     layer_mem = pre_norm(layer_mem)
+
+            block = partial(block, **block_forward_kwargs)
 
             if layer_type == 'a':
                 out, inter = block(x, mask = mask, context_mask = self_attn_kv_mask, attn_mask = attn_mask, rel_pos = self.rel_pos, rotary_pos_emb = rotary_pos_emb, prev_attn = prev_attn, cache = next(iter_attn_cache, None), mem = layer_mem, mem_mask = layer_mem_mask, return_intermediates = True)
@@ -1517,10 +1719,18 @@ class AttentionLayers(Module):
         if return_hiddens:
             layer_hiddens.append(x)
 
+        if self.softclamp_output:
+            x = softclamp(x, self.softclamp_output_value)
+
+        final_norm = self.final_norm
+
+        if self.need_condition:
+            final_norm = maybe(partial)(final_norm, **norm_kwargs)
+
         if self.resi_dual:
-            x = x + self.final_norm(outer_residual)
+            x = x + final_norm(outer_residual)
         else:
-            x = self.final_norm(x)
+            x = final_norm(x)
 
         if not return_hiddens:
             return x
