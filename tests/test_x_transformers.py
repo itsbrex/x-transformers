@@ -1911,7 +1911,7 @@ def test_inverted_cross_attn(attn_sigmoid):
 
     assert out.shape == (2, 64, 512)
 
-@param('use_custom_loss', (False, True))
+@param('use_custom_loss', ('none', 'kl', 'next_latent'))
 @param('ttt_use_muon', (False, True))
 @param('episodic_mem_len', (0, 16))
 def test_ttt_equivalency(use_custom_loss, ttt_use_muon, episodic_mem_len):
@@ -1940,7 +1940,9 @@ def test_ttt_equivalency(use_custom_loss, ttt_use_muon, episodic_mem_len):
     )
 
     custom_loss = None
-    if use_custom_loss:
+    ttt_next_latent_loss = use_custom_loss == 'next_latent'
+
+    if use_custom_loss == 'kl':
         custom_loss = TTTMetaLearningTargetKLLoss(dim = 256, num_classes = 256)
 
     ttt_module_paths = ('attn_layers.layers.0.1.to_v',)
@@ -1955,7 +1957,8 @@ def test_ttt_equivalency(use_custom_loss, ttt_use_muon, episodic_mem_len):
         ttt_lr = 0.,
         ttt_use_muon = ttt_use_muon,
         ttt_muon_lr = 0.,
-        ttt_custom_loss_module = custom_loss
+        ttt_custom_loss_module = custom_loss,
+        ttt_next_latent_loss = ttt_next_latent_loss
     )
 
     # longer sequence to trigger inner ttt gradient updates
@@ -1965,7 +1968,10 @@ def test_ttt_equivalency(use_custom_loss, ttt_use_muon, episodic_mem_len):
     loss_base = wrapper_base(x)
     loss_ttt = wrapper_ttt(x)
 
-    assert torch.allclose(loss_base, loss_ttt, atol = 1e-5)
+    # the next latent loss goes through the vmap'd functional_call path, which has slight numerical differences
+    atol = 1e-3 if ttt_next_latent_loss else 1e-5
+
+    assert torch.allclose(loss_base, loss_ttt, atol = atol)
 
     loss_base.backward()
     loss_ttt.backward()
@@ -1982,10 +1988,14 @@ def test_ttt_equivalency(use_custom_loss, ttt_use_muon, episodic_mem_len):
         p_ttt = params_ttt[name_base]
 
         assert exists(p_ttt.grad)
-        assert torch.allclose(p_base.grad, p_ttt.grad, atol = 1e-4)
+        assert torch.allclose(p_base.grad, p_ttt.grad, atol = 1e-3 if ttt_next_latent_loss else 1e-4)
 
-    if use_custom_loss:
+    if exists(custom_loss):
         for p in custom_loss.parameters():
+            assert exists(p.grad)
+
+    if ttt_next_latent_loss:
+        for p in wrapper_ttt.ttt_custom_loss_module.parameters():
             assert exists(p.grad)
 
     # test generate equivalency
@@ -2008,7 +2018,8 @@ def test_ttt_equivalency(use_custom_loss, ttt_use_muon, episodic_mem_len):
         ttt_lr = 1.0,
         ttt_use_muon = ttt_use_muon,
         ttt_muon_lr = 1.0,
-        ttt_custom_loss_module = deepcopy(custom_loss) if use_custom_loss else None
+        ttt_custom_loss_module = deepcopy(custom_loss) if exists(custom_loss) else None,
+        ttt_next_latent_loss = ttt_next_latent_loss
     )
 
     out_ttt_actual = with_seed(seed)(wrapper_ttt_actual.generate)(prompt, 10, temperature = 0.)
@@ -2085,7 +2096,18 @@ def test_ttt_low_rank(episodic_mem_len):
     for name in ('weight_a', 'weight_b'):
         assert exists(getattr(to_v_wrapper.module, name).grad)
 
-    # the low rank matrices are updated at test time
+    # the memories are stored in the low rank matrices at test time, the memory being the product of the two matrices
+
+    def memory(params):
+        return params['weight_a'][0] @ params['weight_b'][0]
+
+    # the memory starts out zero
+
+    wrapper_ttt.init_ttt(2)
+
+    batch_params = to_v_wrapper.batch_params
+
+    assert torch.allclose(memory(batch_params), torch.zeros_like(memory(batch_params)))
 
     params_before = {name: p.clone() for name, p in batch_params.items()}
 
@@ -2093,8 +2115,8 @@ def test_ttt_low_rank(episodic_mem_len):
 
     batch_params = to_v_wrapper.batch_params
 
-    for name in ('weight_a', 'weight_b'):
-        assert not torch.allclose(batch_params[name], params_before[name])
+    assert not torch.allclose(memory(batch_params), memory(params_before))
+    assert not torch.allclose(batch_params['weight_b'], params_before['weight_b'])
 
 def test_ttt_source_target_mapping():
     import copy
