@@ -2509,3 +2509,59 @@ def test_attn_gating(x_config, h_config, swiglu_values):
     out = attn(x)
 
     out.sum().backward()
+
+def test_recirculation():
+    from x_transformers.recirculation import Recirculation
+
+    net = TransformerWrapper(
+        num_tokens = 64,
+        max_seq_len = 64,
+        attn_layers = Decoder(
+            dim = 8,
+            depth = 4,
+            heads = 4,
+            rotary_pos_emb = True
+        )
+    )
+
+    model = Recirculation(
+        net,
+        source_layer = 3,
+        destination_layer = 1,
+        alpha = 0.15
+    )
+
+    x = torch.randint(0, 64, (2, 8))
+
+    logits = model(x)
+    assert logits.shape == (2, 8, 64)
+
+    logits.sum().backward()
+
+    # multiple source / destination routes, each with its own alpha
+
+    multi = Recirculation(
+        net,
+        source_layer = (2, 3),
+        destination_layer = (0, 1),
+        alpha = (0.1, 0.2)
+    )
+
+    logits = multi(x)
+    assert logits.shape == (2, 8, 64)
+
+    logits.sum().backward()
+
+    # learned mlp for the mixture coefficients
+
+    learned = Recirculation(
+        net,
+        source_layer = 3,
+        destination_layer = 1,
+        use_learned = True
+    )
+
+    logits = learned(x)
+    assert logits.shape == (2, 8, 64)
+
+    logits.sum().backward()

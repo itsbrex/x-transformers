@@ -13,6 +13,8 @@ from einops import rearrange, repeat, pack, unpack
 
 from torch_einops_utils import masked_mean, pad_at_dim, lens_to_mask
 
+from x_transformers.recirculation import Recirculation
+
 def exists(val):
     return val is not None
 
@@ -381,9 +383,16 @@ class AutoregressiveWrapper(Module):
         ),
         cache_kv = True,
         return_intermediates = False,
+        recirculation: Recirculation | None = None,
         **kwargs
     ):
         max_seq_len, greedy = self.max_seq_len, temperature == 0.
+
+        if exists(recirculation):
+            assert isinstance(recirculation, Recirculation), '`recirculation` must be an instance of `Recirculation`'
+            assert recirculation.net is self.net, 'the `Recirculation` wrapper must wrap the same transformer as this `AutoregressiveWrapper`'
+            assert cache_kv and self.net.can_cache_kv, 'recirculation requires kv caching during generation'
+            assert not self.net.looped, 'recirculation is not compatible with a looped transformer'
 
         # handle prompts given as list of variable lengthed token ids
 
@@ -422,6 +431,28 @@ class AutoregressiveWrapper(Module):
         # kv caches
 
         cache = None
+
+        # if doing recirculation, the prefill phase needs to be processed token by token, with the
+        # recirculated states established before the next token is processed (the paper notes this
+        # phase cannot be parallelized)
+
+        if exists(recirculation):
+            out_len = out.shape[-1]
+            prefix_start = max(out_len - max_seq_len, 0) if restrict_to_max_seq_len else 0
+
+            for t_pos in range(prefix_start, out_len - 1):
+                token = out[:, t_pos:(t_pos + 1)]
+
+                _, cache = self.net(
+                    token,
+                    return_intermediates = True,
+                    cache = cache,
+                    input_not_include_cache = True,
+                    seq_start_pos = seq_start_pos,
+                    **kwargs
+                )
+
+                cache = recirculation.recirculate(token, cache, seq_start_pos, kwargs, step = t_pos)
 
         # maybe looped
 
@@ -468,6 +499,13 @@ class AutoregressiveWrapper(Module):
                 seq_start_pos = seq_start_pos,
                 **kwargs
             )
+
+            if exists(recirculation):
+                # the first pass logits are used for the read out (the paper specifies the read out
+                # occurs following the first iteration of a stack); the recirculated states are
+                # established by replaying the latest token through the upper stack
+
+                new_cache = recirculation.recirculate(x, new_cache, seq_start_pos, kwargs, step = out.shape[-1] - 1)
 
             if cache_kv and self.net.can_cache_kv:
                 cache = new_cache

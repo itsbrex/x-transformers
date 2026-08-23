@@ -2800,4 +2800,16 @@ ids_out, num_out, is_number_mask = model.generate(start_ids, start_nums, 17)
 }
 ```
 
+```bibtex
+@misc{mozer2026recirculation,
+    title   = {Recirculation},
+    author  = {Michael C. Mozer and Shoaib Ahmed Siddiqui and Danny Sawyer and Sunny Sanyal and Rosanne Liu},
+    year    = {2026},
+    eprint  = {2608.17981},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG},
+    url     = {https://arxiv.org/abs/2608.17981},
+}
+```
+
 *solve intelligence... then use that to solve everything else.* - Demis Hassabis
