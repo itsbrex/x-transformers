@@ -2511,6 +2511,7 @@ def test_attn_gating(x_config, h_config, swiglu_values):
     out.sum().backward()
 
 def test_recirculation():
+    from x_transformers import AutoregressiveWrapper
     from x_transformers.recirculation import Recirculation
 
     net = TransformerWrapper(
@@ -2537,6 +2538,18 @@ def test_recirculation():
     assert logits.shape == (2, 8, 64)
 
     logits.sum().backward()
+
+    # works within the autoregressive wrapper
+
+    wrapper = AutoregressiveWrapper(model)
+
+    generated = wrapper.generate(torch.randint(0, 64, (2, 4)), 16)
+    assert generated.shape == (2, 16)
+
+    # generate a bit past the max sequence length, with cache truncation
+
+    generated = wrapper.generate(torch.randint(0, 64, (2, 60)), 16)
+    assert generated.shape == (2, 16)
 
     # multiple source / destination routes, each with its own alpha
 
@@ -2565,3 +2578,10 @@ def test_recirculation():
     assert logits.shape == (2, 8, 64)
 
     logits.sum().backward()
+
+    # learned mixer variant too
+
+    learned_wrapper = AutoregressiveWrapper(learned)
+
+    generated = learned_wrapper.generate(torch.randint(0, 64, (2, 4)), 16)
+    assert generated.shape == (2, 16)

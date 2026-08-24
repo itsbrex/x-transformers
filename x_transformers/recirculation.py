@@ -85,7 +85,8 @@ class RecirculationMixer(Module):
 
         return alpha, beta
 
-# the recirculation wrapper
+# recirculation wrapper
+# drop in net for the autoregressive wrapper
 
 class Recirculation(Module):
     def __init__(
@@ -102,6 +103,9 @@ class Recirculation(Module):
         super().__init__()
 
         self.net = net
+
+        assert self.net.can_cache_kv, 'recirculation requires the wrapped transformer to be able to cache key / values during decoding'
+        assert not self.net.looped, 'recirculation is not compatible with a looped transformer'
 
         source_layers = cast_tuple(source_layer)
         destination_layers = cast_tuple(destination_layer)
@@ -136,6 +140,32 @@ class Recirculation(Module):
             assert source < num_attn_layers, f'source layer {source} is out of range for a model with {num_attn_layers} attention layers'
             assert destination < num_attn_layers, f'destination layer {destination} is out of range for a model with {num_attn_layers} attention layers'
 
+    # attributes needed by the autoregressive wrapper
+
+    @property
+    def max_seq_len(self):
+        return self.net.max_seq_len
+
+    @property
+    def add_continuous_pred_head(self):
+        return self.net.add_continuous_pred_head
+
+    @property
+    def can_cache_kv(self):
+        return self.net.can_cache_kv
+
+    @property
+    def can_cache_kv_outside_max_seq_len(self):
+        return self.net.can_cache_kv_outside_max_seq_len
+
+    @property
+    def looped(self):
+        return self.net.looped
+
+    @property
+    def output_is_log_prob(self):
+        return self.net.output_is_log_prob
+
     # mixture coefficients for a route, fixed or learned
 
     def mix_coefficients(self, route, z_source: Tensor, z_dest: Tensor, step):
@@ -167,9 +197,19 @@ class Recirculation(Module):
 
         return z_mixed
 
+    # strip the latest token's kv from the cache
+
+    def _strip_latest_kv(self, cache: LayerIntermediates):
+        for attn_intermediate in cache.attn_intermediates:
+            if attn_intermediate.layer_type != 'a':
+                continue
+
+            attn_intermediate.cached_kv = tuple(kv[..., :-1, :] for kv in attn_intermediate.cached_kv)
+
+        cache.cache_length -= 1
+
     # recirculate the latest token
-    # mix source / destination residual streams of the latest token (eq. 1), replay it through the
-    # upper stack, replacing its key / values. first pass logits retained for read out (per paper)
+    # mix source / destination residuals (eq. 1), replay through the upper stack, replacing its kv
 
     def recirculate(
         self,
@@ -181,24 +221,17 @@ class Recirculation(Module):
     ):
         hiddens = cache.hiddens
 
-        assert exists(hiddens), 'cache with hiddens required - recirculation must be used with the generate function in the autoregressive wrapper'
+        assert exists(hiddens), 'cache with hiddens required - the net must be called with `return_intermediates = True`'
 
         position = cache.cache_length - 1
 
         z_mixed_by_destination = self.mix(hiddens, step = step)
 
-        # strip the latest token's first pass key / values, so the replay only attends to it once;
-        # the replayed (recirculated) key / values then naturally replace them
+        # strip the first pass kv so the recirculated one replaces it on replay
 
-        for attn_intermediate in cache.attn_intermediates:
-            if attn_intermediate.layer_type != 'a':
-                continue
+        self._strip_latest_kv(cache)
 
-            attn_intermediate.cached_kv = tuple(kv[..., :-1, :] for kv in attn_intermediate.cached_kv)
-
-        cache.cache_length = position
-
-        # hook into each destination layer, replacing the latest token's residual with the mixture, before the upper stack replay
+        # inject the mixed residual at each destination layer before replay
 
         hook_handles = []
 
@@ -218,8 +251,7 @@ class Recirculation(Module):
             hook_handles.append(hook_target.register_forward_pre_hook(inject_z_mixed))
 
         try:
-            # replay only the latest token, at its true position. positional embeddings given
-            # explicitly; rotary covers the truncated cache plus the replayed token (repeated last)
+            # replay only the latest token, at its original position
 
             device = x.device
 
@@ -250,10 +282,38 @@ class Recirculation(Module):
 
         return replay_cache
 
-    # prefill: run the sequence token by token (cannot be parallelized, per paper). returns first pass logits
+    # prefill runs token by token (cannot be parallelized per paper)
+    # decoding is a single pass on the latest token, followed by recirculation
 
-    def forward(self, x: Tensor, seq_start_pos = None, **kwargs):
+    def forward(
+        self,
+        x: Tensor,
+        cache: LayerIntermediates | None = None,
+        return_intermediates = False,
+        seq_start_pos = None,
+        **kwargs
+    ):
         assert exists(self.net.to_logits), 'the wrapped network needs a to_logits head'
+
+        if not exists(cache):
+            return self._prefill(x, return_intermediates, seq_start_pos, kwargs)
+
+        # decoding
+
+        logits, new_cache = self.net(
+            x,
+            return_intermediates = True,
+            cache = cache,
+            seq_start_pos = seq_start_pos,
+            **kwargs
+        )
+
+        new_cache = self.recirculate(x, new_cache, seq_start_pos, kwargs, step = new_cache.cache_length - 1)
+
+        return (logits, new_cache) if return_intermediates else logits
+
+    def _prefill(self, x: Tensor, return_intermediates, seq_start_pos, kwargs: dict):
+        net = self.net
 
         logits = []
         cache = None
@@ -261,7 +321,7 @@ class Recirculation(Module):
         for t in range(x.shape[1]):
             token = x[:, t:(t + 1)]
 
-            _, cache = self.net(
+            _, cache = net(
                 token,
                 return_intermediates = True,
                 cache = cache,
@@ -270,14 +330,16 @@ class Recirculation(Module):
                 **kwargs
             )
 
-            # first pass readout (per paper), then recirculate to establish the state for the next token
+            # first pass readout (per paper), then recirculate
 
             hidden = cache.last_hidden[:, -1:]
-            logits.append(self.net.to_logits(hidden))
+            logits.append(net.to_logits(hidden))
 
             cache = self.recirculate(token, cache, seq_start_pos, kwargs, step = t)
 
-        return torch.cat(logits, dim = -2)
+        logits = torch.cat(logits, dim = -2)
+
+        return (logits, cache) if return_intermediates else logits
 
     # train learned mixer with bptt on next token prediction loss, model weights frozen (section 4.6, appendix d.5)
 
