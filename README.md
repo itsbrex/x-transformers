@@ -2812,4 +2812,16 @@ ids_out, num_out, is_number_mask = model.generate(start_ids, start_nums, 17)
 }
 ```
 
+```bibtex
+@misc{ndubuaku2026controlledstudyattentiononlytransformers,
+    title   = {A Controlled Study of Attention-Only Transformers},
+    author  = {Henry Ndubuaku and Karen Mosoyan and Jakub Mroz and Noah Cylich and Satyajit Kumar and Parkirat Sandhu and Roman Shemet and Justin H Lee},
+    year    = {2026},
+    eprint  = {2607.18363},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG},
+    url     = {https://arxiv.org/abs/2607.18363},
+}
+```
+
 *solve intelligence... then use that to solve everything else.* - Demis Hassabis

@@ -2585,3 +2585,22 @@ def test_recirculation():
 
     generated = learned_wrapper.generate(torch.randint(0, 64, (2, 4)), 16)
     assert generated.shape == (2, 16)
+
+def test_only_attn():
+    model = TransformerWrapper(
+        num_tokens = 20000,
+        max_seq_len = 1024,
+        attn_layers = Decoder(
+            dim = 512,
+            depth = 12,
+            heads = 8,
+            only_attn = True,
+            attn_qk_norm = True,
+        )
+    )
+
+    assert model.attn_layers.num_ff_layers == 0
+
+    x = torch.randint(0, 20000, (1, 1024))
+    logits = model(x)
+    logits.sum().backward()
