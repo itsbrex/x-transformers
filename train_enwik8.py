@@ -53,7 +53,9 @@ def train(
     seq_len = 1024,
     track_experiment_online = False,
     run_name = 'baseline',
-    cpu = False
+    cpu = False,
+    gated_multi_residual = False,
+    read_gate_rank = 64
 ):
     accelerator = Accelerator(cpu=cpu)
     device = accelerator.device
@@ -71,7 +73,9 @@ def train(
             heads = 8,
             rotary_pos_emb = False,
             polar_pos_emb = True,
-            pre_and_post_norm = True
+            pre_and_post_norm = not gated_multi_residual,
+            gated_multi_residual = gated_multi_residual,
+            residual_fn_kwargs = dict(read_gate_rank = read_gate_rank) if gated_multi_residual else dict()
         )
     )
 

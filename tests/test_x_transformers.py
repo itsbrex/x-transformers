@@ -630,6 +630,28 @@ def test_hyper_connections(qkv_receive_diff_residuals):
 
     model(x)
 
+@param('qkv_receive_diff_residuals', (False, True))
+def test_gated_multi_residual(qkv_receive_diff_residuals):
+
+    model = TransformerWrapper(
+        num_tokens = 256,
+        max_seq_len = 1024,
+        attn_layers = Decoder(
+            dim = 512,
+            depth = 6,
+            heads = 8,
+            gated_multi_residual = True,
+            qkv_receive_diff_residuals = qkv_receive_diff_residuals,
+            num_residual_streams = 2,
+            residual_fn_kwargs = dict(read_gate_rank = 16)
+        )
+    )
+
+    x = torch.randint(0, 256, (2, 128))
+
+    logits = model(x)
+    logits.sum().backward()
+
 @param('hybrid_axial_dim', (1, 4))
 def test_hybrid(hybrid_axial_dim):
     from torch.nn import GRU

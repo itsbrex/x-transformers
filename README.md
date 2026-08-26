@@ -2615,7 +2615,7 @@ ids_out, num_out, is_number_mask = model.generate(start_ids, start_nums, 17)
 ```bibtex
 @misc{xie2025mhcmanifoldconstrainedhyperconnections,
     title   = {mHC: Manifold-Constrained Hyper-Connections},
-    author  = {Zhenda Xie and Yixuan Wei and Huanqi Cao and Chenggang Zhao and Chengqi Deng and Jiashi Li and Damai Dai and Huazuo Gao and Jiang Chang and Liang Zhao and Shangyan Zhou and Zhean Xu and Zhengyan Zhang and Wangding Zeng and Shengding Hu and Yuqing Wang and Jingyang Yuan and Lean Wang and Wenfeng Liang},
+    author  = {Zhenda Xie and Yixuan Wei and Huanqi Cao and Chenggang Zhao and Chengqi Deng and Jiashi Li and Damai Dai and Huazuo Gao and Jiang Chang and Kuai Yu and Liang Zhao and Shangyan Zhou and Zhean Xu and Zhengyan Zhang and Wangding Zeng and Shengding Hu and Yuqing Wang and Jingyang Yuan and Lean Wang and Wenfeng Liang},
     year    = {2025},
     eprint  = {2512.24880},
     archivePrefix = {arXiv},
@@ -2821,6 +2821,16 @@ ids_out, num_out, is_number_mask = model.generate(start_ids, start_nums, 17)
     archivePrefix = {arXiv},
     primaryClass = {cs.LG},
     url     = {https://arxiv.org/abs/2607.18363},
+}
+```
+
+```bibtex
+@misc{qwen3.8flashnext,
+    title  = {{Qwen3.8-Flash-Next}: A New Architecture, Towards Ultimate Cost-Efficiency},
+    author = {{Qwen Team}},
+    month  = {August},
+    year   = {2026},
+    url    = {https://qwen.ai/blog?id=qwen3.8-flash-next}
 }
 ```
 
