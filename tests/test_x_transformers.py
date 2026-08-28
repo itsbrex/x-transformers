@@ -2272,6 +2272,49 @@ def test_ttt_sleep_phase():
 
     assert loss.ndim == 0
 
+@param('batch_size', (2, 4))
+def test_ttt_write_batch_size_independent(batch_size):
+    # the ttt inner loop loss is reduced per batch element (dim = -1), so the memory
+    # write must be identical whether a sequence is processed alone or in a batch
+
+    from x_transformers.xl_autoregressive_wrapper import XLAutoregressiveWrapper
+    from x_transformers import Decoder, TransformerWrapper
+
+    model = TransformerWrapper(
+        num_tokens = 256,
+        max_seq_len = 32,
+        max_mem_len = 32,
+        attn_layers = Decoder(
+            dim = 64,
+            depth = 2,
+            heads = 4
+        )
+    )
+
+    wrapper_ttt = XLAutoregressiveWrapper(
+        model,
+        tbptt_steps = 32,
+        ttt_module_paths = ('episodic_mems',),
+        episodic_mem_len = 8,
+        ttt_lr = 10.
+    )
+
+    def write_memory(seq):
+        wrapper_ttt.init_ttt(seq.shape[0])
+
+        logits, intermediates = wrapper_ttt.net(seq[:, :-1], return_intermediates = True)
+
+        wrapper_ttt.update_ttt(logits, seq[:, 1:], create_graph = False, intermediates = intermediates)
+
+        return wrapper_ttt.ttt_wrappers['episodic_mems'].batch_params['mem_kv'].detach()
+
+    seqs = torch.randint(0, 256, (batch_size, 33))
+
+    mem_batched = write_memory(seqs)
+    mem_single = torch.stack([write_memory(seqs[i:i + 1])[0] for i in range(batch_size)])
+
+    assert torch.allclose(mem_batched, mem_single, atol = 1e-4)
+
 @param('dynamics_type', ('residual', 'gru', 'custom'))
 @param('loss_type', ('smooth_l1', 'mse_and_cosine_sim'))
 def test_next_latent(dynamics_type, loss_type):
