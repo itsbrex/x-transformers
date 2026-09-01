@@ -1229,6 +1229,17 @@ def test_beam_search_kv_cache_parity():
     assert torch.equal(cached_beams, uncached_beams)
     assert torch.allclose(cached_scores, uncached_scores, atol = 1e-5)
 
+    unrestricted_beams, unrestricted_scores = wrapper.beam_search(
+        prompts,
+        seq_len = 5,
+        beams = 3,
+        restrict_to_max_seq_len = False,
+        return_beams_and_scores = True
+    )
+
+    assert torch.equal(unrestricted_beams, uncached_beams)
+    assert torch.allclose(unrestricted_scores, uncached_scores, atol = 1e-5)
+
 
 @param('num_pooled_tokens', (1, 3))
 @param('attn_pool_depth', (1, 3))
