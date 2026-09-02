@@ -2718,3 +2718,78 @@ def test_only_attn():
     x = torch.randint(0, 20000, (1, 1024))
     logits = model(x)
     logits.sum().backward()
+
+def test_discover():
+    from x_transformers.x_transformers import TransformerWrapper, Decoder
+    from x_transformers.discover_wrapper import (
+        DiscoverDecoder,
+        TPREncoder,
+        role_ids_for_tokens
+    )
+
+    # reversal task, 6 symbols over length 3
+
+    model = DiscoverDecoder(
+        decoder = TransformerWrapper(
+            num_tokens = 8,
+            max_seq_len = 16,
+            attn_layers = Decoder(dim = 32, depth = 2, heads = 2, ff_mult = 2)
+        ),
+        num_fillers = 6,
+        bos_id = 6,
+        pad_id = 7,
+        max_seq_len = 3
+    )
+
+    src = torch.randint(0, 6, (8, 3))
+    tgt = src.flip(-1)
+
+    # train on list reversal
+
+    logits = model(src, tgt)
+    loss = torch.nn.functional.cross_entropy(logits.reshape(-1, 8), tgt.reshape(-1))
+    loss.backward()
+
+    # decode from E
+
+    encodings = model.encode(src)
+    outputs = model.decode(encodings, torch.full((8,), 3))
+    assert outputs.shape == (8, 3)
+
+    # fit TPR to encodings, use in place of E
+
+    tokens = torch.randint(0, 6, (256, 3))
+    lengths = torch.full((256,), 3)
+    mask = torch.ones(256, 3, dtype = torch.bool)
+    role_ids = role_ids_for_tokens(tokens, lengths, 'bidirectional', max_seq_len = 3, num_fillers = 6)
+
+    tpr = TPREncoder(dim = model.dim, num_fillers = 6, num_roles = 6)
+    tpr.fit(tokens, role_ids, model.encode(tokens), mask = mask, steps = 40, batch_size = 64)
+
+    approx_encodings = tpr(tokens, role_ids, mask)
+    assert approx_encodings.shape == (256, model.dim)
+
+    outputs = model.decode(approx_encodings, lengths)
+    assert outputs.shape == (256, 3)
+
+    # constituent surgery: swap a filler, decode edited encoding
+
+    row = tokens[:1]
+    edited = row.clone()
+    edited[0, 1] = (int(row[0, 1]) + 1) % 6
+
+    role_ids_old = role_ids_for_tokens(row, lengths[:1], 'bidirectional', max_seq_len = 3, num_fillers = 6)
+    role_ids_new = role_ids_for_tokens(edited, lengths[:1], 'bidirectional', max_seq_len = 3, num_fillers = 6)
+
+    outputs = model.surgery(row, edited, role_ids_old, role_ids_new, tpr)
+    assert outputs.shape == (1, 3)
+
+    # nonlinear MLP readout variant
+
+    tpr_mlp = TPREncoder(dim = model.dim, num_fillers = 6, num_roles = 6, mlp_dim = 16)
+    tpr_mlp.fit(tokens, role_ids, model.encode(tokens), mask = mask, steps = 20, batch_size = 128)
+
+    approx_encodings = tpr_mlp(tokens, role_ids, mask)
+    outputs = model.surgery(row, edited, role_ids_old, role_ids_new, tpr_mlp)
+    assert approx_encodings.shape == (256, model.dim)
+    assert outputs.shape == (1, 3)

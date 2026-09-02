@@ -2834,4 +2834,17 @@ ids_out, num_out, is_number_mask = model.generate(start_ids, start_nums, 17)
 }
 ```
 
+```bibtex
+@misc{mccoy2026emergent,
+    title  = {The Emergent Symbolic Structure of Artificial Neural Networks},
+    author = {McCoy, R. Thomas and Soulos, Paul and Linzen, Tal and Smolensky, Paul},
+    month  = {August},
+    year   = {2026},
+    eprint = {2608.29530},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CL},
+    url    = {https://arxiv.org/abs/2608.29530}
+}
+```
+
 *solve intelligence... then use that to solve everything else.* - Demis Hassabis
